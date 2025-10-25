@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Minesweeper — Farcaster Mini App</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto; background:#0b0f12; color:#e7ecf0; display:grid; place-items:center; min-height:100dvh; }
+  .wrap { width:min(520px,96vw); position:relative; padding:12px; }
+  .card { background:#12171b; border:1px solid #1f2a32; border-radius:14px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .title { font-weight:800; font-size:20px; margin:0 0 8px; }
+  .muted { color:#9aa7b1; font-size:14px; line-height:1.35; }
+  button { appearance:none; border:0; background:#1dd979; color:#04130c; font-weight:700; padding:10px 16px; border-radius:12px; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
+
+  /* Phaser mount area (it will create its own canvas inside) */
+  #game-root {
+    display:block;
+    width:min(480px,96vw);
+    aspect-ratio: 4 / 3;           /* room for the classic layout */
+    background:#0e1418; border:1px solid #1f2a32; border-radius:12px; margin:12px auto 10px;
+    overflow:hidden; touch-action:none;
+  }
+
+  .hud { display:flex; justify-content:space-between; gap:8px; font-size:14px; color:#a8b6c1; }
+  .kbd { background:#0f151a;border:1px solid #1f2a32;border-radius:8px;padding:2px 6px; }
+
+  .overlay { position:fixed; inset:0; display:grid; place-items:center; background:rgba(8,11,14,.6); backdrop-filter:blur(2px); padding:16px; }
+  .hidden { display:none!important; }
+  #play-start { padding:12px 18px; border-radius:12px; border:0; font-weight:700; background:#1dd979; color:#04130c; cursor:pointer; box-shadow:0 10px 30px rgba(0,0,0,.35); }
+
+  #status { margin-top:10px; font-size:13px; line-height:1.35; background:#0f151a; border:1px solid #1f2a32; border-radius:10px; padding:10px; }
+  #status b { color:#cde7d8; }
+  #status .ok { color:#4ade80; }
+  #status .warn { color:#fbbf24; }
+  #status .err { color:#f87171; }
+  #status a { color:#86c6ff; text-decoration:none; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="intro-overlay" class="overlay">
+      <div class="card" role="dialog" aria-modal="true">
+        <h1 class="title">Minesweeper</h1>
+        <p class="muted">A small Base payment is required to start playing.</p>
+        <div class="row">
+          <div class="muted">Change recipient/amount in code.</div>
+          <button id="play-start" type="button">Pay & Play</button>
+        </div>
+        <div id="status" class="hidden"></div>
+        <p class="muted" style="margin-top:10px">
+          Tip: <span class="kbd">Left click</span> to open, <span class="kbd">Right click</span> to flag. On mobile, <b>long-press</b> to flag.
+        </p>
+      </div>
+    </div>
+
+    <div id="game-root" aria-label="Minesweeper game area"></div>
+
+    <div class="hud">
+      <div>Controls: <span class="kbd">Left Click</span> open &nbsp;/&nbsp; <span class="kbd">Right Click</span> flag &nbsp;/&nbsp; <span class="kbd">Long-press</span> (mobile) flag</div>
+      <div class="muted">Pay to start, and again if you lose.</div>
+    </div>
+  </div>
+
+<!-- Phaser -->
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.85.2/dist/phaser.min.js"></script>
+
+<script>
+/* ===============================
+   GAME BOOTSTRAP + LIFECYCLE
+   =============================== */
+window.GAME_ACTIVE = false;
+window.__phaserGame = null;
+
+function mountGame() {
+  // Destroy any previous game instance for a clean state
+  if (window.__phaserGame) {
+    try { window.__phaserGame.destroy(true); } catch {}
+    window.__phaserGame = null;
+  }
+
+  // === Difficulty (change here): Beginner 9x9, 10 bombs ===
+  const DIFFICULTY = { width: 9, height: 9, bombs: 10 };
+
+  // Phaser scenes (defined below)
+  class MineSweeper extends Phaser.Scene {
+    constructor(){ super('MineSweeper'); }
+    init(){ this.width = DIFFICULTY.width; this.height = DIFFICULTY.height; this.bombs = DIFFICULTY.bombs; }
+    preload(){
+      this.input.mouse?.disableContextMenu();
+      this.load.setBaseURL('https://cdn.phaserfiles.com/v385');
+      this.load.setPath('assets/games/minesweeper/');
+      this.load.spritesheet('tiles', 'tiles.png', { frameWidth: 16 });
+      this.load.spritesheet('digits', 'digits.png', { frameWidth: 13, frameHeight: 23, endFrame: 9 });
+      this.load.spritesheet('buttons', 'digits.png', { frameWidth: 26, frameHeight: 26, startFrame: 5 });
+      this.load.image('topLeft', 'top-left.png');
+      this.load.image('topRight', 'top-right.png');
+      this.load.image('topBg', 'top-bg.png');
+      this.load.image('botLeft', 'bot-left.png');
+      this.load.image('botRight', 'bot-right.png');
+      this.load.image('botBg', 'bot-bg.png');
+      this.load.image('left', 'left.png');
+      this.load.image('right', 'right.png');
+      this.load.image('win95', 'win95.png');
+    }
+    create(){
+      this.add.image(0, 0, 'win95').setOrigin(0);
+      this.grid = new Grid(this, this.width, this.height, this.bombs);
+    }
+  }
+
+  // ==== Your original classes with small tweaks (mobile long-press + overlay hooks) ====
+  class Cell {
+    constructor(grid, index, x, y) {
+      this.grid = grid;
+      this.index = index;
+      this.x = x; this.y = y;
+      this.open = false; this.bomb = false;
+      this.flagged = false; this.query = false; this.exploded = false;
+      this.value = 0;
+
+      this.tile = grid.scene.make.image({
+        key: 'tiles', frame: 0,
+        x: grid.offset.x + (x * 16),
+        y: grid.offset.y + (y * 16),
+        origin: 0
+      });
+      grid.board.add(this.tile);
+      this.tile.setInteractive();
+
+      // Long-press support (mobile): press >= 350ms => flag
+      this._longTimer = null;
+      this._didLongFlag = false;
+
+      this.tile.on('pointerdown', this.onPointerDown, this);
+      this.tile.on('pointerup', this.onPointerUp, this);
+      this.tile.on('pointerout', this.onPointerOut, this);
+      this.tile.on('pointercancel', this.onPointerOut, this);
+    }
+
+    reset(){
+      this.open = false; this.bomb = false;
+      this.flagged = false; this.query = false; this.exploded = false;
+      this.value = 0; this.tile.setFrame(0);
+    }
+
+    onPointerDown(pointer) {
+      if (!this.grid.populated) { this.grid.generate(this.index); }
+      if (this.open || !this.grid.playing) { return; }
+
+      if (pointer.rightButtonDown()) {
+        // Right-click flag cycle
+        if (this.query) { this.query = false; this.tile.setFrame(0); }
+        else if (this.flagged) { this.query = true; this.flagged = false; this.grid.updateBombs(-1); this.tile.setFrame(3); }
+        else { this.flagged = true; this.tile.setFrame(2); this.grid.updateBombs(1); this.grid.checkWinState(); }
+      } else {
+        // Left/touch: start long-press timer to flag on touch
+        this._didLongFlag = false;
+        // Only run long-press for touch pointers
+        if (pointer.pointerType === 'touch') {
+          this._longTimer = this.grid.scene.time.delayedCall(350, () => {
+            if (!this.flagged && !this.open && this.grid.playing) {
+              this.flagged = true;
+              this.tile.setFrame(2);
+              this.grid.updateBombs(1);
+              this.grid.checkWinState();
+              this._didLongFlag = true;
+            }
+          });
+        }
+      }
+    }
+
+    onPointerUp(pointer) {
+      // cancel long press if pending
+      if (this._longTimer && this._longTimer.getProgress() < 1) {
+        this._longTimer.remove(false);
+      }
+      this._longTimer = null;
+
+      // If we long-flagged, don't open
+      if (this._didLongFlag) {
+        this._didLongFlag = false;
+      } else {
+        // Regular left click (or quick tap): open if not flagged/query
+        if (!this.flagged && !this.query && this.grid.playing) {
+          this.onClick();
+        }
+      }
+
+      if (this.grid.button.frame.name === 2) {
+        this.grid.button.setFrame(0);
+      }
+    }
+
+    onPointerOut() {
+      if (this._longTimer && this._longTimer.getProgress() < 1) {
+        this._longTimer.remove(false);
+      }
+      this._longTimer = null;
+    }
+
+    onClick() {
+      if (this.bomb) {
+        this.exploded = true;
+        this.grid.gameOver();
+      } else {
+        if (this.value === 0) { this.grid.floodFill(this.x, this.y); }
+        else { this.show(); }
+        this.grid.button.setFrame(2);
+        this.grid.checkWinState();
+      }
+    }
+
+    reveal() {
+      if (this.exploded) { this.tile.setFrame(6); }
+      else if (!this.bomb && (this.flagged || this.query)) { this.tile.setFrame(7); }
+      else if (this.bomb) { this.tile.setFrame(5); }
+      else { this.show(); }
+    }
+
+    show() {
+      const values = [1,8,9,10,11,12,13,14,15];
+      this.tile.setFrame(values[this.value]);
+      this.open = true;
+    }
+
+    debug() {
+      const values = ['⬜️','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣'];
+      if (this.bomb) { return '💣'; }
+      else { return values[this.value]; }
+    }
+  }
+
+  class Grid {
+    constructor(scene, width, height, bombs) {
+      this.scene = scene;
+      this.width = width; this.height = height;
+      this.size = width * height;
+      this.offset = new Phaser.Math.Vector2(12, 55);
+
+      this.timeCounter = 0;
+      this.bombQty = bombs; this.bombsCounter = bombs;
+
+      this.playing = false; this.populated = false;
+
+      this.timer = scene.time.addEvent();
+      // 0 waiting, 1 playing, 2 won, 3 lost
+      this.state = 0;
+
+      this.data = [];
+
+      const x = Math.floor((scene.scale.width / 2) - (20 + (width * 16)) / 2);
+      const y = Math.floor((scene.scale.height / 2) - (63 + (height * 16)) / 2);
+      this.board = scene.add.container(x, y);
+
+      this.digit1; this.digit2; this.digit3;
+      this.time1; this.time2; this.time3;
+      this.button;
+
+      this.createBackground();
+      this.createCells();
+      this.updateDigits();
+
+      this.button.setInteractive();
+      this.button.on('pointerdown', this.onButtonDown, this);
+      this.button.on('pointerup', this.onButtonUp, this);
+    }
+
+    createCells() {
+      let i = 0;
+      for (let x = 0; x < this.width; x++) {
+        this.data[x] = [];
+        for (let y = 0; y < this.height; y++) {
+          this.data[x][y] = new Cell(this, i, x, y);
+          i++;
+        }
+      }
+    }
+
+    createBackground() {
+      const board = this.board;
+      const factory = this.scene.add;
+      const width = this.width * 16;
+      const height = this.height * 16;
+
+      // Top
+      board.add(factory.image(0, 0, 'topLeft').setOrigin(0));
+      const topBgWidth = (width + 20) - 60 - 56;
+      board.add(factory.tileSprite(60, 0, topBgWidth, 55, 'topBg').setOrigin(0));
+      board.add(factory.image(width + 20, 0, 'topRight').setOrigin(1, 0));
+
+      // Sides
+      const sideHeight = (height + 63) - 55 - 8;
+      board.add(factory.tileSprite(0, 55, 12, sideHeight, 'left').setOrigin(0));
+      board.add(factory.tileSprite(width + 20, 55, 8, sideHeight, 'right').setOrigin(1, 0));
+
+      // Bottom
+      board.add(factory.image(0, height + 63, 'botLeft').setOrigin(0, 1));
+      const botBgWidth = (width + 20) - 12 - 8;
+      board.add(factory.tileSprite(12, height + 63, botBgWidth, 8, 'botBg').setOrigin(0, 1));
+      board.add(factory.image(width + 20, height + 63, 'botRight').setOrigin(1, 1));
+
+      // Bombs Digits
+      this.digit1 = factory.image(17, 16, 'digits', 0).setOrigin(0);
+      this.digit2 = factory.image(17 + 13, 16, 'digits', 0).setOrigin(0);
+      this.digit3 = factory.image(17 + 26, 16, 'digits', 0).setOrigin(0);
+      board.add([ this.digit1, this.digit2, this.digit3 ]);
+
+      // Timer Digits
+      const x = (width + 20) - 54;
+      this.time1 = factory.image(x, 16, 'digits', 0).setOrigin(0);
+      this.time2 = factory.image(x + 13, 16, 'digits', 0).setOrigin(0);
+      this.time3 = factory.image(x + 26, 16, 'digits', 0).setOrigin(0);
+      board.add([ this.time1, this.time2, this.time3 ]);
+
+      // Button
+      const buttonX = Math.floor(((width + 20) / 2) - 13);
+      this.button = factory.image(buttonX, 15, 'buttons', 0).setOrigin(0);
+      board.add(this.button);
+    }
+
+    updateBombs(diff) { this.bombsCounter -= diff; this.updateDigits(); }
+    updateDigits() {
+      const count = Phaser.Utils.String.Pad(this.bombsCounter.toString(), 3, '0', 1);
+      this.digit1.setFrame(parseInt(count[0]));
+      this.digit2.setFrame(parseInt(count[1]));
+      this.digit3.setFrame(parseInt(count[2]));
+    }
+
+    onButtonDown() { this.button.setFrame(1); }
+    onButtonUp() {
+      if (this.state > 0) { this.button.setFrame(0); this.restart(); }
+    }
+
+    restart() {
+      this.populated = false; this.playing = false; this.bombsCounter = this.bombQty;
+      this.state = 0; this.timeCounter = -1; this.timer.paused = true;
+
+      let location = 0;
+      do {
+        this.getCell(location).reset();
+        location++;
+      } while (location < this.size);
+
+      this.updateDigits();
+      this.time1.setFrame(0); this.time2.setFrame(0); this.time3.setFrame(0);
+    }
+
+    // Show overlay + require pay again on loss
+    _showOverlayLost() {
+      const overlay = document.getElementById('intro-overlay');
+      const titleEl = overlay.querySelector('.title');
+      const btn = document.getElementById('play-start');
+      const statusEl = document.getElementById('status');
+      if (titleEl) titleEl.textContent = 'Game Over';
+      if (btn) btn.textContent = 'Pay & Play Again';
+      if (statusEl) statusEl.classList.add('hidden');
+      overlay.classList.remove('hidden');
+    }
+    // Show overlay + free retry on win
+    _showOverlayWin() {
+      const overlay = document.getElementById('intro-overlay');
+      const titleEl = overlay.querySelector('.title');
+      const btn = document.getElementById('play-start');
+      const statusEl = document.getElementById('status');
+      if (titleEl) titleEl.textContent = 'You Won!';
+      if (btn) btn.textContent = 'Play Again (Free)';
+      if (statusEl) statusEl.classList.add('hidden');
+      overlay.classList.remove('hidden');
+    }
+
+    gameOver() {
+      this.playing = false; this.state = 3; this.timer.paused = true;
+      this.button.setFrame(4);
+
+      let location = 0;
+      do { this.getCell(location).reveal(); location++; } while (location < this.size);
+
+      window.GAME_ACTIVE = false;
+      this._showOverlayLost();
+    }
+
+    gameWon() {
+      this.playing = false; this.state = 2; this.timer.paused = true;
+      this.button.setFrame(3);
+      window.GAME_ACTIVE = false;
+      this._showOverlayWin();
+    }
+
+    checkWinState() {
+      let correct = 0, location = 0, open = 0;
+      do {
+        const cell = this.getCell(location);
+        if (cell.open) { open++; }
+        if (cell.bomb && cell.flagged) { open++; correct++; }
+        location++;
+      } while (location < this.size);
+
+      if (correct === this.bombQty && open === this.size) { this.gameWon(); }
+    }
+
+    generate(startIndex) {
+      let qty = this.bombQty;
+      const bombs = [];
+      do {
+        const location = Phaser.Math.Between(0, this.size - 1);
+        const cell = this.getCell(location);
+        if (!cell.bomb && cell.index !== startIndex) {
+          cell.bomb = true; qty--; bombs.push(cell);
+        }
+      } while (qty > 0);
+
+      bombs.forEach(cell => {
+        const adjacent = this.getAdjacentCells(cell);
+        adjacent.forEach(adjacentCell => { if (adjacentCell) { adjacentCell.value++; } });
+      });
+
+      this.playing = true; this.populated = true; this.state = 1;
+      this.timer.reset({ delay: 1000, callback: this.onTimer, callbackScope: this, loop: true });
+      this.debug();
+    }
+
+    onTimer() {
+      this.timeCounter++;
+      if (this.timeCounter < 1000) {
+        const count = Phaser.Utils.String.Pad(this.timeCounter.toString(), 3, '0', 1);
+        this.time1.setFrame(parseInt(count[0]));
+        this.time2.setFrame(parseInt(count[1]));
+        this.time3.setFrame(parseInt(count[2]));
+      }
+    }
+
+    getCell(index) {
+      const pos = Phaser.Math.ToXY(index, this.width, this.height);
+      return this.data[pos.x][pos.y];
+    }
+    getCellXY(x, y) {
+      if (x < 0 || x >= this.width || y < 0 || y >= this.height) { return null; }
+      return this.data[x][y];
+    }
+    getAdjacentCells(cell) {
+      return [
+        this.getCellXY(cell.x - 1, cell.y - 1),
+        this.getCellXY(cell.x,     cell.y - 1),
+        this.getCellXY(cell.x + 1, cell.y - 1),
+        this.getCellXY(cell.x - 1, cell.y),
+        this.getCellXY(cell.x + 1, cell.y),
+        this.getCellXY(cell.x - 1, cell.y + 1),
+        this.getCellXY(cell.x,     cell.y + 1),
+        this.getCellXY(cell.x + 1, cell.y + 1)
+      ];
+    }
+    floodFill(x, y) {
+      const cell = this.getCellXY(x, y);
+      if (cell && !cell.open && !cell.bomb) {
+        cell.show();
+        if (cell.value === 0) {
+          this.floodFill(x, y - 1);
+          this.floodFill(x, y + 1);
+          this.floodFill(x - 1, y);
+          this.floodFill(x + 1, y);
+        }
+      }
+    }
+
+    debug() {
+      // Comment out the console spam in production if desired
+      for (let y = 0; y < this.height; y++) {
+        let row = '';
+        for (let x = 0; x < this.width; x++) {
+          let cell = this.data[x][y];
+          if (x === 0) { row = row.concat(`|`); }
+          row = row.concat(`${cell.debug()}|`);
+        }
+        console.log(row);
+      }
+      console.log('');
+    }
+  }
+
+  // Compute a comfortable size for classic layout
+  const parentEl = document.getElementById('game-root');
+  const { width } = parentEl.getBoundingClientRect();
+  const gameW = Math.max(320, Math.floor(width));
+  const gameH = Math.floor(gameW * 3 / 4);
+
+  window.__phaserGame = new Phaser.Game({
+    type: Phaser.AUTO,
+    width: gameW,
+    height: gameH,
+    backgroundColor: 0x2d2d2d,
+    parent: 'game-root',
+    scene: [ MineSweeper ],
+    input: { mouse: { preventDefault: true } },
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH }
+  });
+}
+
+function startGame() {
+  window.GAME_ACTIVE = true;
+  const overlay = document.getElementById('intro-overlay');
+  overlay.classList.add('hidden');
+  mountGame();
+}
+</script>
+
+<!-- Pay-to-Play (Base) using Farcaster Mini App SDK -->
+<script type="module">
+  import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk';
+  sdk.actions.ready();
+
+  /* ===== CONFIG ===== */
+  const USE_BASE_SEPOLIA = false;     // true: 84532, false: 8453
+  const RECIPIENT = "0x47dd6644adc050eee94143BeFa7F5A2f455D3c73";
+  const AMOUNT_ETH = "0.00001";
+
+  const BASE_MAINNET = { chainId: "0x2105",  explorer: "https://basescan.org/tx/" };
+  const BASE_SEPOLIA = { chainId: "0x14a34", explorer: "https://sepolia.basescan.org/tx/" };
+  const TARGET = USE_BASE_SEPOLIA ? BASE_SEPOLIA : BASE_MAINNET;
+
+  /* ===== PAYMENT + UI ===== */
+  const statusEl = document.getElementById('status');
+  const playStartBtn = document.getElementById('play-start');
+
+  function parseEther(x){
+    const [w,f=""]=String(x).split('.');
+    const frac=(f+'0'.repeat(18)).slice(0,18);
+    return '0x'+(BigInt(w)*10n**18n+BigInt(frac)).toString(16);
+  }
+  async function getProvider(){
+    try { const p = await sdk.wallet.getEthereumProvider(); if (p) return p; } catch {}
+    return window.ethereum ?? null;
+  }
+  async function ensureChain(provider, chainId) {
+    const current = (await provider.request({ method:'eth_chainId' }))?.toLowerCase();
+    if (current === chainId.toLowerCase()) return;
+    try {
+      await provider.request({ method:'wallet_switchEthereumChain', params:[{ chainId }] });
+    } catch (e) {
+      if (e?.code === 4902) {
+        await provider.request({ method:'wallet_addEthereumChain', params:[{ chainId }] });
+        await provider.request({ method:'wallet_switchEthereumChain', params:[{ chainId }] });
+      } else { throw e; }
+    }
+  }
+
+  async function requiredPayment() {
+    statusEl.classList.remove('hidden');
+    statusEl.innerHTML = '<b>Connecting wallet…</b>';
+    const provider = await getProvider();
+    if (!provider) { statusEl.innerHTML += '<div class="err">No wallet available.</div>'; throw new Error('NO_PROVIDER'); }
+    const [from] = await provider.request({ method:'eth_requestAccounts' });
+    await ensureChain(provider, TARGET.chainId);
+    statusEl.innerHTML += `<div>Sending ${AMOUNT_ETH} ETH to ${RECIPIENT.slice(0,6)}…${RECIPIENT.slice(-4)}…</div>`;
+    const hash = await provider.request({ method:'eth_sendTransaction', params:[{ from, to: RECIPIENT, value: parseEther(AMOUNT_ETH) }] });
+    statusEl.innerHTML += `<div class="ok">TX sent! <a target="_blank" href="${TARGET.explorer}${hash}">View TX</a></div>`;
+    return hash;
+  }
+
+  async function payThenStart(btn) {
+    try {
+      btn.disabled = true;
+
+      // If last state was "You Won!", let them replay for free
+      if (btn.textContent.includes('Play Again (Free)')) {
+        startGame();
+        return;
+      }
+
+      await requiredPayment();
+
+      // If the game is already active (shouldn't be), remount
+      if (window.GAME_ACTIVE) {
+        startGame();
+      } else {
+        startGame();
+      }
+    } catch (e) {
+      statusEl.innerHTML += `<div class="warn">Payment failed or cancelled.</div>`;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  playStartBtn.addEventListener('click', (e)=>{ e.preventDefault(); payThenStart(playStartBtn); });
+
+  // Optional: auto-resize Phaser canvas when container size changes
+  new ResizeObserver(() => {
+    if (window.__phaserGame && window.__phaserGame.scale) {
+      window.__phaserGame.scale.refresh();
+    }
+  }).observe(document.getElementById('game-root'));
+</script>
+</body>
+</html>
